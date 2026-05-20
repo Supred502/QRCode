@@ -31,6 +31,7 @@ createBtn.addEventListener("click", () => {
   state.items[id] = state.items[id] || "";
   saveState(state);
   render();
+  downloadRedirectIndex(id);
 });
 
 function loadState() {
@@ -203,6 +204,12 @@ function updateDestination(id, value, labelEl) {
   state.items[id] = trimmed;
   saveState(state);
   labelEl.textContent = trimmed ? `Current: ${trimmed}` : "No destination set";
+  downloadRedirectIndex(id);
+}
+
+function downloadRedirectIndex(id) {
+  const html = buildRedirectHtml(id, state.items[id] || "");
+  downloadText(`${id}-index.html`, html);
 }
 
 function getQrLink(id) {

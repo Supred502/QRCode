@@ -1,5 +1,6 @@
 const STORAGE_KEY = "qr-manager:v1";
 const SETTINGS_KEY = "qr-manager:settings";
+const GITHUB_KEY = "qr-manager:github";
 const QUIET_ZONE = 4;
 const PREVIEW_SCALE = 6;
 
@@ -14,6 +15,12 @@ const defaultSettings = {
   moduleSize: 1.6
 };
 
+const defaultGithub = {
+  username: "",
+  repo: "",
+  token: ""
+};
+
 const listEl = document.getElementById("qrList");
 const emptyEl = document.getElementById("emptyState");
 const countEl = document.getElementById("qrCount");
@@ -22,8 +29,11 @@ const template = document.getElementById("qrCardTemplate");
 
 let state = normalizeState(loadState());
 let settings = loadSettings();
+let githubSettings = loadGithubSettings();
+let githubCommitQueue = Promise.resolve();
 
 setupSettingsUI();
+setupGithubUI();
 render();
 
 createBtn.addEventListener("click", () => {
@@ -88,6 +98,73 @@ function loadSettings() {
 
 function saveSettings(next) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+}
+
+function loadGithubSettings() {
+  try {
+    const raw = localStorage.getItem(GITHUB_KEY);
+    if (!raw) {
+      return { ...defaultGithub };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      username: (parsed.username || "").trim(),
+      repo: (parsed.repo || "").trim(),
+      token: (parsed.token || "").trim()
+    };
+  } catch (err) {
+    return { ...defaultGithub };
+  }
+}
+
+function saveGithubSettings(next) {
+  localStorage.setItem(GITHUB_KEY, JSON.stringify(next));
+}
+
+function setupGithubUI() {
+  const userInput = document.getElementById("githubUser");
+  const repoInput = document.getElementById("githubRepo");
+  const tokenInput = document.getElementById("githubToken");
+  const saveBtn = document.getElementById("saveGithubBtn");
+  const testBtn = document.getElementById("testGithubBtn");
+  const statusEl = document.getElementById("githubStatus");
+
+  if (!userInput || !repoInput || !tokenInput || !saveBtn || !statusEl) {
+    return;
+  }
+
+  userInput.value = githubSettings.username;
+  repoInput.value = githubSettings.repo;
+  if (githubSettings.token) {
+    tokenInput.placeholder = "Token stored (enter to replace)";
+  }
+
+  const persist = () => {
+    const next = {
+      username: userInput.value.trim(),
+      repo: repoInput.value.trim(),
+      token: tokenInput.value.trim() || githubSettings.token || ""
+    };
+    githubSettings = next;
+    saveGithubSettings(next);
+    tokenInput.value = "";
+    tokenInput.placeholder = next.token ? "Token stored (enter to replace)" : "ghp_...";
+    updateGithubStatus();
+  };
+
+  saveBtn.addEventListener("click", () => {
+    persist();
+    setGithubStatus("GitHub settings saved.", "ok");
+  });
+
+  if (testBtn) {
+    testBtn.addEventListener("click", () => {
+      persist();
+      testGithubConnection();
+    });
+  }
+
+  updateGithubStatus();
 }
 
 function setupSettingsUI() {
@@ -179,13 +256,12 @@ function render() {
     });
 
     threeMfBtn.addEventListener("click", () => {
-      const threeMf = build3mf(matrix, settings, id);
+      const threeMf = build3mf(matrix, settings);
       downloadBlob(`${id}.3mf`, threeMf);
     });
 
     redirectBtn.addEventListener("click", () => {
-      const html = buildRedirectHtml(id, state.items[id] || "");
-      downloadText(`${id}-index.html`, html);
+      downloadRedirectIndex(id);
     });
 
     card.dataset.qrId = id;
@@ -210,6 +286,7 @@ function updateDestination(id, value, labelEl) {
 function downloadRedirectIndex(id) {
   const html = buildRedirectHtml(id, state.items[id] || "");
   downloadText(`${id}-index.html`, html);
+  queueGithubCommit(id, html);
 }
 
 function getQrLink(id) {
@@ -305,6 +382,129 @@ function downloadBlob(filename, blob) {
 
 function downloadText(filename, text) {
   downloadBlob(filename, new Blob([text], { type: "text/plain" }));
+}
+
+function queueGithubCommit(id, html) {
+  if (!isGithubConfigured()) {
+    setGithubStatus("GitHub sync is not configured yet.", "warn");
+    return;
+  }
+
+  githubCommitQueue = githubCommitQueue
+    .then(() => commitRedirectToGithub(id, html))
+    .catch((err) => {
+      setGithubStatus(err.message || "GitHub commit failed.", "error");
+    });
+}
+
+function isGithubConfigured() {
+  return Boolean(githubSettings.username && githubSettings.repo && githubSettings.token);
+}
+
+function updateGithubStatus() {
+  if (isGithubConfigured()) {
+    setGithubStatus(`GitHub sync ready for ${githubSettings.username}/${githubSettings.repo}.`, "ok");
+  } else {
+    setGithubStatus("Add your GitHub username, repo, and token to enable auto-commit.", "warn");
+  }
+}
+
+function setGithubStatus(message, level) {
+  const statusEl = document.getElementById("githubStatus");
+  if (!statusEl) {
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.classList.remove("status-ok", "status-warn", "status-error");
+  if (level === "ok") {
+    statusEl.classList.add("status-ok");
+  } else if (level === "error") {
+    statusEl.classList.add("status-error");
+  } else {
+    statusEl.classList.add("status-warn");
+  }
+}
+
+async function testGithubConnection() {
+  if (!isGithubConfigured()) {
+    setGithubStatus("Missing GitHub settings. Please fill in all fields.", "warn");
+    return;
+  }
+
+  setGithubStatus("Testing GitHub connection...", "warn");
+  try {
+    const response = await fetch(buildGithubRepoUrl(), {
+      headers: buildGithubHeaders()
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub test failed (${response.status}).`);
+    }
+    setGithubStatus("GitHub connection verified.", "ok");
+  } catch (err) {
+    setGithubStatus(err.message || "GitHub connection failed.", "error");
+  }
+}
+
+async function commitRedirectToGithub(id, html) {
+  const path = `${id}/index.html`;
+  setGithubStatus(`Committing ${path}...`, "warn");
+
+  const sha = await getGithubFileSha(path);
+  const content = base64FromBytes(encodeUtf8(html));
+  const message = sha ? `Update ${path}` : `Create ${path}`;
+  const payload = {
+    message,
+    content
+  };
+  if (sha) {
+    payload.sha = sha;
+  }
+
+  const response = await fetch(buildGithubContentsUrl(path), {
+    method: "PUT",
+    headers: buildGithubHeaders(),
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`GitHub commit failed (${response.status}). ${text}`);
+  }
+
+  setGithubStatus(`Committed ${path}.`, "ok");
+}
+
+async function getGithubFileSha(path) {
+  const response = await fetch(buildGithubContentsUrl(path), {
+    headers: buildGithubHeaders()
+  });
+
+  if (response.status === 404) {
+    return "";
+  }
+
+  if (!response.ok) {
+    throw new Error(`GitHub lookup failed (${response.status}).`);
+  }
+
+  const data = await response.json();
+  return data && data.sha ? data.sha : "";
+}
+
+function buildGithubRepoUrl() {
+  return `https://api.github.com/repos/${githubSettings.username}/${githubSettings.repo}`;
+}
+
+function buildGithubContentsUrl(path) {
+  return `https://api.github.com/repos/${githubSettings.username}/${githubSettings.repo}/contents/${path}`;
+}
+
+function buildGithubHeaders() {
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${githubSettings.token}`,
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
 }
 
 function buildRedirectHtml(id, fallbackUrl) {
@@ -517,6 +717,16 @@ const CRC_TABLE = createCrcTable();
 
 function encodeUtf8(text) {
   return ZIP_ENCODER.encode(text);
+}
+
+function base64FromBytes(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 function buildZipBlob(entries, mimeType) {

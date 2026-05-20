@@ -45,20 +45,8 @@
   </div>
   <script>
     (function() {
-      var STORAGE_KEY = "qr-manager:v1";
-      var QR_ID = "qr1";
-      var FALLBACK_URL = "https://supred502.github.io/QRCode/";
+      var FALLBACK_URL = "";
       var url = FALLBACK_URL;
-
-      try {
-        var stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          var data = JSON.parse(stored);
-          if (data && data.items && data.items[QR_ID]) {
-            url = data.items[QR_ID];
-          }
-        }
-      } catch (err) {}
 
       var target = document.getElementById("redirect-target");
       if (target) {

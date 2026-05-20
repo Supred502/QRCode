@@ -322,6 +322,23 @@ button.small {
   font-size: 0.85rem;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  box-shadow: none;
+  transform: none;
+}
+
+button:disabled:hover {
+  transform: none;
+}
+
+input:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
+  background: #f3eee6;
+}
+
 button:hover {
   transform: translateY(-1px);
 }

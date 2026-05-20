@@ -1,8 +1,11 @@
-const STORAGE_KEY = "qr-manager:v1";
-const SETTINGS_KEY = "qr-manager:settings";
 const GITHUB_KEY = "qr-manager:github";
+const MANIFEST_PATH = "qr-manifest.json";
+const MANIFEST_VERSION = 1;
 const QUIET_ZONE = 4;
 const PREVIEW_SCALE = 6;
+const UTF8_DECODER = new TextDecoder();
+// Change this to your edit passphrase (leave blank to disable the lock).
+const EDIT_PASSWORD = "change-me";
 
 const defaultState = {
   counter: 0,
@@ -27,34 +30,39 @@ const countEl = document.getElementById("qrCount");
 const createBtn = document.getElementById("createQrBtn");
 const template = document.getElementById("qrCardTemplate");
 
-let state = normalizeState(loadState());
-let settings = loadSettings();
+let state = normalizeState({ ...defaultState });
+let settings = { ...defaultSettings };
 let githubSettings = loadGithubSettings();
 let githubCommitQueue = Promise.resolve();
+let isEditUnlocked = !EDIT_PASSWORD;
 
-setupSettingsUI();
-setupGithubUI();
-render();
+initialize();
 
-createBtn.addEventListener("click", () => {
-  const id = createNextId(state);
-  state.items[id] = state.items[id] || "";
-  saveState(state);
+createBtn.addEventListener("click", handleCreateClick);
+
+async function initialize() {
+  setupSettingsUI();
+  setupGithubUI();
+  setupEditLockUI();
+  await loadManifest();
   render();
-  downloadRedirectIndex(id);
-});
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : { ...defaultState };
-  } catch (err) {
-    return { ...defaultState };
-  }
 }
 
-function saveState(next) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+function handleCreateClick() {
+  if (!isEditUnlocked) {
+    setEditStatus("Unlock editing to create QR codes.", "warn");
+    return;
+  }
+
+  if (!isGithubConfigured()) {
+    setGithubStatus("GitHub sync is not configured yet.", "warn");
+    return;
+  }
+
+  const id = createNextId(state);
+  state.items[id] = state.items[id] || "";
+  render();
+  queueGithubSync(id);
 }
 
 function normalizeState(next) {
@@ -79,26 +87,116 @@ function normalizeState(next) {
   return next;
 }
 
-function loadSettings() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) {
-      return { ...defaultSettings };
-    }
-    const parsed = JSON.parse(raw);
+function normalizeManifest(next) {
+  if (!next || typeof next !== "object") {
+    return { version: MANIFEST_VERSION, items: {} };
+  }
+
+  const items = next.items && typeof next.items === "object" ? next.items : {};
+  return {
+    version: MANIFEST_VERSION,
+    items
+  };
+}
+
+function buildManifestJson() {
+  const ordered = {};
+  Object.keys(state.items)
+    .sort(sortIds)
+    .forEach((id) => {
+      ordered[id] = state.items[id];
+    });
+
+  const manifest = {
+    version: MANIFEST_VERSION,
+    updatedAt: new Date().toISOString(),
+    items: ordered
+  };
+
+  return JSON.stringify(manifest, null, 2);
+}
+
+function deriveRepoFromLocation() {
+  const host = window.location.hostname || "";
+  if (!host.endsWith(".github.io")) {
+    return null;
+  }
+
+  const username = host.replace(".github.io", "");
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  if (!username || segments.length === 0) {
+    return null;
+  }
+
+  return {
+    username,
+    repo: segments[0]
+  };
+}
+
+function getReadRepoContext() {
+  if (githubSettings.username && githubSettings.repo) {
     return {
-      baseThickness: Number(parsed.baseThickness || defaultSettings.baseThickness),
-      moduleHeight: Number(parsed.moduleHeight || defaultSettings.moduleHeight),
-      moduleSize: Number(parsed.moduleSize || defaultSettings.moduleSize)
+      username: githubSettings.username,
+      repo: githubSettings.repo
     };
+  }
+
+  return deriveRepoFromLocation();
+}
+
+async function loadManifest() {
+  const repoContext = getReadRepoContext();
+  if (!repoContext) {
+    return;
+  }
+
+  try {
+    const manifestText = await fetchGithubFileText(MANIFEST_PATH, repoContext);
+    if (!manifestText) {
+      state = normalizeState({ ...defaultState });
+      return;
+    }
+
+    const parsed = JSON.parse(manifestText);
+    const manifest = normalizeManifest(parsed);
+    state = normalizeState({ ...defaultState, items: manifest.items });
   } catch (err) {
-    return { ...defaultSettings };
+    setGithubStatus(err.message || "Failed to load GitHub manifest.", "error");
   }
 }
 
-function saveSettings(next) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+async function fetchGithubFileText(path, context) {
+  const response = await fetch(buildGithubContentsUrl(path, context), {
+    headers: buildGithubHeaders(Boolean(githubSettings.token))
+  });
+
+  if (response.status === 404) {
+    return "";
+  }
+
+  if (!response.ok) {
+    throw new Error(`GitHub read failed (${response.status}).`);
+  }
+
+  const data = await response.json();
+  if (!data || !data.content) {
+    return "";
+  }
+
+  return decodeBase64(data.content);
 }
+
+function decodeBase64(base64) {
+  const cleaned = base64.replace(/\s/g, "");
+  const binary = atob(cleaned);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return UTF8_DECODER.decode(bytes);
+}
+
 
 function loadGithubSettings() {
   try {
@@ -133,8 +231,10 @@ function setupGithubUI() {
     return;
   }
 
-  userInput.value = githubSettings.username;
-  repoInput.value = githubSettings.repo;
+  const fallback = deriveRepoFromLocation();
+
+  userInput.value = githubSettings.username || (fallback ? fallback.username : "");
+  repoInput.value = githubSettings.repo || (fallback ? fallback.repo : "");
   if (githubSettings.token) {
     tokenInput.placeholder = "Token stored (enter to replace)";
   }
@@ -155,6 +255,7 @@ function setupGithubUI() {
   saveBtn.addEventListener("click", () => {
     persist();
     setGithubStatus("GitHub settings saved.", "ok");
+    loadManifest().then(render);
   });
 
   if (testBtn) {
@@ -188,7 +289,6 @@ function setupSettingsUI() {
     baseValue.textContent = `${settings.baseThickness.toFixed(1)} mm`;
     moduleValue.textContent = `${settings.moduleHeight.toFixed(1)} mm`;
     sizeValue.textContent = `${settings.moduleSize.toFixed(1)} mm`;
-    saveSettings(settings);
   };
 
   baseInput.addEventListener("input", update);
@@ -196,6 +296,72 @@ function setupSettingsUI() {
   sizeInput.addEventListener("input", update);
 
   update();
+}
+
+function setupEditLockUI() {
+  const unlockBtn = document.getElementById("unlockEditBtn");
+  const lockBtn = document.getElementById("lockEditBtn");
+  const statusEl = document.getElementById("editStatus");
+
+  if (!unlockBtn || !statusEl) {
+    return;
+  }
+
+  const setUnlocked = (next, message, level) => {
+    isEditUnlocked = next;
+    applyEditMode();
+    if (message) {
+      setEditStatus(message, level || (next ? "ok" : "warn"));
+    }
+  };
+
+  if (!EDIT_PASSWORD) {
+    setUnlocked(true, "Editing is unlocked.", "ok");
+    return;
+  }
+
+  setEditStatus("Editing is locked.", "warn");
+
+  unlockBtn.addEventListener("click", () => {
+    const entry = window.prompt("Enter edit password");
+    if (entry === null) {
+      return;
+    }
+    if (entry === EDIT_PASSWORD) {
+      setUnlocked(true, "Editing unlocked for this session.", "ok");
+    } else {
+      setEditStatus("Incorrect password.", "error");
+    }
+  });
+
+  if (lockBtn) {
+    lockBtn.addEventListener("click", () => {
+      setUnlocked(false, "Editing locked.", "warn");
+    });
+  }
+}
+
+function applyEditMode() {
+  const editControls = document.querySelectorAll("[data-edit-control]");
+  editControls.forEach((control) => {
+    control.disabled = !isEditUnlocked;
+  });
+}
+
+function setEditStatus(message, level) {
+  const statusEl = document.getElementById("editStatus");
+  if (!statusEl) {
+    return;
+  }
+  statusEl.textContent = message;
+  statusEl.classList.remove("status-ok", "status-warn", "status-error");
+  if (level === "ok") {
+    statusEl.classList.add("status-ok");
+  } else if (level === "error") {
+    statusEl.classList.add("status-error");
+  } else {
+    statusEl.classList.add("status-warn");
+  }
 }
 
 function createNextId(next) {
@@ -222,7 +388,6 @@ function render() {
     const saveBtn = node.querySelector("[data-save]");
     const pngBtn = node.querySelector("[data-download-png]");
     const threeMfBtn = node.querySelector("[data-download-3mf]");
-    const redirectBtn = node.querySelector("[data-download-redirect]");
 
     const link = getQrLink(id);
     const destination = state.items[id] || "";
@@ -260,13 +425,11 @@ function render() {
       downloadBlob(`${id}.3mf`, threeMf);
     });
 
-    redirectBtn.addEventListener("click", () => {
-      downloadRedirectIndex(id);
-    });
-
     card.dataset.qrId = id;
     listEl.appendChild(node);
   });
+
+  applyEditMode();
 }
 
 function sortIds(a, b) {
@@ -276,17 +439,20 @@ function sortIds(a, b) {
 }
 
 function updateDestination(id, value, labelEl) {
+  if (!isEditUnlocked) {
+    setEditStatus("Unlock editing to save destinations.", "warn");
+    return;
+  }
+
+  if (!isGithubConfigured()) {
+    setGithubStatus("GitHub sync is not configured yet.", "warn");
+    return;
+  }
+
   const trimmed = value.trim();
   state.items[id] = trimmed;
-  saveState(state);
   labelEl.textContent = trimmed ? `Current: ${trimmed}` : "No destination set";
-  downloadRedirectIndex(id);
-}
-
-function downloadRedirectIndex(id) {
-  const html = buildRedirectHtml(id, state.items[id] || "");
-  downloadText(`${id}-index.html`, html);
-  queueGithubCommit(id, html);
+  queueGithubSync(id);
 }
 
 function getQrLink(id) {
@@ -380,18 +546,24 @@ function downloadBlob(filename, blob) {
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
 }
 
-function downloadText(filename, text) {
-  downloadBlob(filename, new Blob([text], { type: "text/plain" }));
-}
-
-function queueGithubCommit(id, html) {
+function queueGithubSync(id) {
   if (!isGithubConfigured()) {
     setGithubStatus("GitHub sync is not configured yet.", "warn");
     return;
   }
 
+  const redirectPath = `${id}/index.html`;
+  const html = buildRedirectHtml(id, state.items[id] || "");
+  const manifestText = buildManifestJson();
+
   githubCommitQueue = githubCommitQueue
-    .then(() => commitRedirectToGithub(id, html))
+    .then(async () => {
+      setGithubStatus(`Committing ${redirectPath}...`, "warn");
+      await commitGithubFile(redirectPath, html);
+      setGithubStatus(`Committing ${MANIFEST_PATH}...`, "warn");
+      await commitGithubFile(MANIFEST_PATH, manifestText);
+      setGithubStatus(`Committed ${redirectPath} and ${MANIFEST_PATH}.`, "ok");
+    })
     .catch((err) => {
       setGithubStatus(err.message || "GitHub commit failed.", "error");
     });
@@ -434,7 +606,7 @@ async function testGithubConnection() {
   setGithubStatus("Testing GitHub connection...", "warn");
   try {
     const response = await fetch(buildGithubRepoUrl(), {
-      headers: buildGithubHeaders()
+      headers: buildGithubHeaders(true)
     });
     if (!response.ok) {
       throw new Error(`GitHub test failed (${response.status}).`);
@@ -445,12 +617,9 @@ async function testGithubConnection() {
   }
 }
 
-async function commitRedirectToGithub(id, html) {
-  const path = `${id}/index.html`;
-  setGithubStatus(`Committing ${path}...`, "warn");
-
-  const sha = await getGithubFileSha(path);
-  const content = base64FromBytes(encodeUtf8(html));
+async function commitGithubFile(path, text) {
+  const sha = await getGithubFileSha(path, githubSettings);
+  const content = base64FromBytes(encodeUtf8(text));
   const message = sha ? `Update ${path}` : `Create ${path}`;
   const payload = {
     message,
@@ -460,9 +629,9 @@ async function commitRedirectToGithub(id, html) {
     payload.sha = sha;
   }
 
-  const response = await fetch(buildGithubContentsUrl(path), {
+  const response = await fetch(buildGithubContentsUrl(path, githubSettings), {
     method: "PUT",
-    headers: buildGithubHeaders(),
+    headers: buildGithubHeaders(true),
     body: JSON.stringify(payload)
   });
 
@@ -470,13 +639,11 @@ async function commitRedirectToGithub(id, html) {
     const text = await response.text();
     throw new Error(`GitHub commit failed (${response.status}). ${text}`);
   }
-
-  setGithubStatus(`Committed ${path}.`, "ok");
 }
 
-async function getGithubFileSha(path) {
-  const response = await fetch(buildGithubContentsUrl(path), {
-    headers: buildGithubHeaders()
+async function getGithubFileSha(path, context) {
+  const response = await fetch(buildGithubContentsUrl(path, context), {
+    headers: buildGithubHeaders(true)
   });
 
   if (response.status === 404) {
@@ -491,20 +658,25 @@ async function getGithubFileSha(path) {
   return data && data.sha ? data.sha : "";
 }
 
-function buildGithubRepoUrl() {
-  return `https://api.github.com/repos/${githubSettings.username}/${githubSettings.repo}`;
+function buildGithubRepoUrl(context = githubSettings) {
+  return `https://api.github.com/repos/${context.username}/${context.repo}`;
 }
 
-function buildGithubContentsUrl(path) {
-  return `https://api.github.com/repos/${githubSettings.username}/${githubSettings.repo}/contents/${path}`;
+function buildGithubContentsUrl(path, context = githubSettings) {
+  return `https://api.github.com/repos/${context.username}/${context.repo}/contents/${path}`;
 }
 
-function buildGithubHeaders() {
-  return {
+function buildGithubHeaders(includeAuth) {
+  const headers = {
     Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${githubSettings.token}`,
     "X-GitHub-Api-Version": "2022-11-28"
   };
+
+  if (includeAuth && githubSettings.token) {
+    headers.Authorization = `Bearer ${githubSettings.token}`;
+  }
+
+  return headers;
 }
 
 function buildRedirectHtml(id, fallbackUrl) {
@@ -557,20 +729,8 @@ function buildRedirectHtml(id, fallbackUrl) {
   </div>
   <script>
     (function() {
-      var STORAGE_KEY = "qr-manager:v1";
-      var QR_ID = ${JSON.stringify(id)};
       var FALLBACK_URL = ${JSON.stringify(cleanFallback)};
       var url = FALLBACK_URL;
-
-      try {
-        var stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          var data = JSON.parse(stored);
-          if (data && data.items && data.items[QR_ID]) {
-            url = data.items[QR_ID];
-          }
-        }
-      } catch (err) {}
 
       var target = document.getElementById("redirect-target");
       if (target) {

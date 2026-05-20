@@ -52,19 +52,6 @@
       <p class="hint">Quiet zone border is included automatically.</p>
     </section>
 
-    <section class="settings edit-gate">
-      <div class="section-header">
-        <h2>Edit access</h2>
-        <p>Unlock to create or update QR destinations.</p>
-      </div>
-      <div class="form-actions">
-        <button class="primary" id="unlockEditBtn">Unlock editing</button>
-        <button class="ghost" id="lockEditBtn">Lock editing</button>
-      </div>
-      <p class="status" id="editStatus">Editing is locked.</p>
-      <p class="hint">Unlock lasts until the page is refreshed.</p>
-    </section>
-
     <section class="settings github">
       <div class="section-header">
         <h2>GitHub sync</h2>
@@ -73,22 +60,22 @@
       <div class="form-grid">
         <label class="field">
           <span>GitHub username</span>
-          <input type="text" id="githubUser" placeholder="octocat" autocomplete="username" data-edit-control>
+          <input type="text" id="githubUser" placeholder="octocat" autocomplete="username">
         </label>
         <label class="field">
           <span>Repository name</span>
-          <input type="text" id="githubRepo" placeholder="QRCode" autocomplete="off" data-edit-control>
+          <input type="text" id="githubRepo" placeholder="QRCode" autocomplete="off">
         </label>
         <label class="field">
           <span>Personal Access Token</span>
-          <input type="password" id="githubToken" placeholder="ghp_..." autocomplete="off" data-edit-control>
+          <input type="password" id="githubToken" placeholder="ghp_..." autocomplete="off">
         </label>
       </div>
       <div class="form-actions">
-        <button class="primary" id="saveGithubBtn" data-edit-control>Save GitHub settings</button>
-        <button class="ghost" id="testGithubBtn" data-edit-control>Test connection</button>
+        <button class="primary" id="saveGithubBtn">Save GitHub settings</button>
+        <button class="ghost" id="testGithubBtn">Test connection</button>
       </div>
-      <p class="status" id="githubStatus">Add your GitHub settings to enable auto-commit.</p>
+      <p class="status" id="githubStatus">Add your GitHub settings and test the connection to enable editing.</p>
       <p class="hint">Token is stored in localStorage. Use a fine-grained token with Contents: Read and write.</p>
     </section>
 

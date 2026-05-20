@@ -4,8 +4,7 @@ const MANIFEST_VERSION = 1;
 const QUIET_ZONE = 4;
 const PREVIEW_SCALE = 6;
 const UTF8_DECODER = new TextDecoder();
-// Change this to your edit passphrase (leave blank to disable the lock).
-const EDIT_PASSWORD = "change-me";
+const REQUIRED_GITHUB_USER = "Supred502";
 
 const defaultState = {
   counter: 0,
@@ -34,7 +33,8 @@ let state = normalizeState({ ...defaultState });
 let settings = { ...defaultSettings };
 let githubSettings = loadGithubSettings();
 let githubCommitQueue = Promise.resolve();
-let isEditUnlocked = !EDIT_PASSWORD;
+let isEditUnlocked = false;
+let hasGithubAccess = false;
 
 initialize();
 
@@ -43,14 +43,17 @@ createBtn.addEventListener("click", handleCreateClick);
 async function initialize() {
   setupSettingsUI();
   setupGithubUI();
-  setupEditLockUI();
   await loadManifest();
   render();
+  refreshEditAccess();
+  maybeAutoVerifyGithub();
 }
 
 function handleCreateClick() {
   if (!isEditUnlocked) {
-    setEditStatus("Unlock editing to create QR codes.", "warn");
+    handleEditLocked(
+      `Editing locked. Use ${REQUIRED_GITHUB_USER} with a valid token and test the connection to enable edits.`
+    );
     return;
   }
 
@@ -249,12 +252,15 @@ function setupGithubUI() {
     saveGithubSettings(next);
     tokenInput.value = "";
     tokenInput.placeholder = next.token ? "Token stored (enter to replace)" : "ghp_...";
+    hasGithubAccess = false;
     updateGithubStatus();
+    refreshEditAccess();
   };
 
   saveBtn.addEventListener("click", () => {
     persist();
-    setGithubStatus("GitHub settings saved.", "ok");
+    setGithubStatus("GitHub settings saved. Testing access...", "warn");
+    testGithubConnection();
     loadManifest().then(render);
   });
 
@@ -298,47 +304,31 @@ function setupSettingsUI() {
   update();
 }
 
-function setupEditLockUI() {
-  const unlockBtn = document.getElementById("unlockEditBtn");
-  const lockBtn = document.getElementById("lockEditBtn");
-  const statusEl = document.getElementById("editStatus");
+function isAuthorizedUser() {
+  if (!githubSettings.username || !githubSettings.token) {
+    return false;
+  }
+  return githubSettings.username.toLowerCase() === REQUIRED_GITHUB_USER.toLowerCase();
+}
 
-  if (!unlockBtn || !statusEl) {
+function maybeAutoVerifyGithub() {
+  if (!isAuthorizedUser() || hasGithubAccess) {
+    refreshEditAccess();
     return;
   }
 
-  const setUnlocked = (next, message, level) => {
-    isEditUnlocked = next;
-    applyEditMode();
-    if (message) {
-      setEditStatus(message, level || (next ? "ok" : "warn"));
-    }
-  };
-
-  if (!EDIT_PASSWORD) {
-    setUnlocked(true, "Editing is unlocked.", "ok");
-    return;
-  }
-
-  setEditStatus("Editing is locked.", "warn");
-
-  unlockBtn.addEventListener("click", () => {
-    const entry = window.prompt("Enter edit password");
-    if (entry === null) {
-      return;
-    }
-    if (entry === EDIT_PASSWORD) {
-      setUnlocked(true, "Editing unlocked for this session.", "ok");
-    } else {
-      setEditStatus("Incorrect password.", "error");
-    }
+  testGithubConnection({ silent: true }).catch(() => {
+    refreshEditAccess();
   });
+}
 
-  if (lockBtn) {
-    lockBtn.addEventListener("click", () => {
-      setUnlocked(false, "Editing locked.", "warn");
-    });
-  }
+function refreshEditAccess() {
+  isEditUnlocked = Boolean(isAuthorizedUser() && hasGithubAccess);
+  applyEditMode();
+}
+
+function handleEditLocked(message) {
+  setGithubStatus(message, "warn");
 }
 
 function applyEditMode() {
@@ -346,22 +336,6 @@ function applyEditMode() {
   editControls.forEach((control) => {
     control.disabled = !isEditUnlocked;
   });
-}
-
-function setEditStatus(message, level) {
-  const statusEl = document.getElementById("editStatus");
-  if (!statusEl) {
-    return;
-  }
-  statusEl.textContent = message;
-  statusEl.classList.remove("status-ok", "status-warn", "status-error");
-  if (level === "ok") {
-    statusEl.classList.add("status-ok");
-  } else if (level === "error") {
-    statusEl.classList.add("status-error");
-  } else {
-    statusEl.classList.add("status-warn");
-  }
 }
 
 function createNextId(next) {
@@ -440,7 +414,9 @@ function sortIds(a, b) {
 
 function updateDestination(id, value, labelEl) {
   if (!isEditUnlocked) {
-    setEditStatus("Unlock editing to save destinations.", "warn");
+    handleEditLocked(
+      `Editing locked. Use ${REQUIRED_GITHUB_USER} with a valid token and test the connection to enable edits.`
+    );
     return;
   }
 
@@ -562,6 +538,8 @@ function queueGithubSync(id) {
       await commitGithubFile(redirectPath, html);
       setGithubStatus(`Committing ${MANIFEST_PATH}...`, "warn");
       await commitGithubFile(MANIFEST_PATH, manifestText);
+      hasGithubAccess = true;
+      refreshEditAccess();
       setGithubStatus(`Committed ${redirectPath} and ${MANIFEST_PATH}.`, "ok");
     })
     .catch((err) => {
@@ -570,14 +548,30 @@ function queueGithubSync(id) {
 }
 
 function isGithubConfigured() {
-  return Boolean(githubSettings.username && githubSettings.repo && githubSettings.token);
+  return Boolean(githubSettings.username && githubSettings.repo && isAuthorizedUser());
 }
 
 function updateGithubStatus() {
-  if (isGithubConfigured()) {
-    setGithubStatus(`GitHub sync ready for ${githubSettings.username}/${githubSettings.repo}.`, "ok");
+  if (!githubSettings.username || !githubSettings.repo) {
+    setGithubStatus("Add your GitHub username and repo to enable sync.", "warn");
+    return;
+  }
+
+  if (!isAuthorizedUser()) {
+    setGithubStatus(
+      `Editing locked. Use ${REQUIRED_GITHUB_USER} and a valid token to enable edits.`,
+      "warn"
+    );
+    return;
+  }
+
+  if (hasGithubAccess) {
+    setGithubStatus(
+      `GitHub sync ready for ${githubSettings.username}/${githubSettings.repo}. Editing enabled.`,
+      "ok"
+    );
   } else {
-    setGithubStatus("Add your GitHub username, repo, and token to enable auto-commit.", "warn");
+    setGithubStatus("Test connection to enable editing.", "warn");
   }
 }
 
@@ -597,13 +591,49 @@ function setGithubStatus(message, level) {
   }
 }
 
-async function testGithubConnection() {
-  if (!isGithubConfigured()) {
-    setGithubStatus("Missing GitHub settings. Please fill in all fields.", "warn");
-    return;
+async function testGithubConnection(options = {}) {
+  const silent = Boolean(options.silent);
+
+  if (!githubSettings.username || !githubSettings.repo) {
+    hasGithubAccess = false;
+    refreshEditAccess();
+    if (!silent) {
+      setGithubStatus("Missing GitHub username or repo.", "warn");
+    } else {
+      updateGithubStatus();
+    }
+    return false;
   }
 
-  setGithubStatus("Testing GitHub connection...", "warn");
+  if (!githubSettings.token) {
+    hasGithubAccess = false;
+    refreshEditAccess();
+    if (!silent) {
+      setGithubStatus("Missing Personal Access Token.", "warn");
+    } else {
+      updateGithubStatus();
+    }
+    return false;
+  }
+
+  if (!isAuthorizedUser()) {
+    hasGithubAccess = false;
+    refreshEditAccess();
+    if (!silent) {
+      setGithubStatus(
+        `Editing locked. Use ${REQUIRED_GITHUB_USER} and a valid token to enable edits.`,
+        "warn"
+      );
+    } else {
+      updateGithubStatus();
+    }
+    return false;
+  }
+
+  if (!silent) {
+    setGithubStatus("Testing GitHub connection...", "warn");
+  }
+
   try {
     const response = await fetch(buildGithubRepoUrl(), {
       headers: buildGithubHeaders(true)
@@ -611,9 +641,23 @@ async function testGithubConnection() {
     if (!response.ok) {
       throw new Error(`GitHub test failed (${response.status}).`);
     }
-    setGithubStatus("GitHub connection verified.", "ok");
+    hasGithubAccess = true;
+    refreshEditAccess();
+    if (!silent) {
+      setGithubStatus("GitHub connection verified. Editing enabled.", "ok");
+    } else {
+      updateGithubStatus();
+    }
+    return true;
   } catch (err) {
-    setGithubStatus(err.message || "GitHub connection failed.", "error");
+    hasGithubAccess = false;
+    refreshEditAccess();
+    if (!silent) {
+      setGithubStatus(err.message || "GitHub connection failed.", "error");
+    } else {
+      updateGithubStatus();
+    }
+    return false;
   }
 }
 

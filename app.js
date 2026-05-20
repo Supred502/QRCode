@@ -379,7 +379,7 @@ function buildRedirectHtml(id, fallbackUrl) {
 </html>`;
 }
 
-function build3mf(matrix, options, name) {
+function build3mf(matrix, options) {
   const moduleSize = clampNumber(options.moduleSize, 0.5, 10);
   const baseThickness = clampNumber(options.baseThickness, 0.2, 10);
   const moduleHeight = clampNumber(options.moduleHeight, 0.2, 10);

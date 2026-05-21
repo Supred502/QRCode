@@ -41,7 +41,9 @@ let hasGithubAccess = false;
 
 initialize();
 
-createBtn.addEventListener("click", handleCreateClick);
+if (createBtn) {
+  createBtn.addEventListener("click", handleCreateClick);
+}
 
 async function initialize() {
   setupSettingsUI();
@@ -326,6 +328,10 @@ function setupSettingsUI() {
   const moduleValue = document.getElementById("moduleHeightValue");
   const sizeValue = document.getElementById("moduleSizeValue");
 
+  if (!baseInput || !moduleInput || !sizeInput || !baseValue || !moduleValue || !sizeValue) {
+    return;
+  }
+
   baseInput.value = settings.baseThickness;
   moduleInput.value = settings.moduleHeight;
   sizeInput.value = settings.moduleSize;
@@ -388,6 +394,10 @@ function createNextId(next) {
 }
 
 function render() {
+  if (!listEl || !template) {
+    return;
+  }
+
   listEl.innerHTML = "";
   const ids = Object.keys(state.items).sort(sortIds);
   if (editorId && !ids.includes(editorId)) {
@@ -395,8 +405,12 @@ function render() {
   }
   const visibleIds = editorId ? [editorId] : ids;
 
-  emptyEl.hidden = visibleIds.length > 0;
-  countEl.textContent = String(visibleIds.length);
+  if (emptyEl) {
+    emptyEl.hidden = visibleIds.length > 0;
+  }
+  if (countEl) {
+    countEl.textContent = String(visibleIds.length);
+  }
 
   visibleIds.forEach((id) => {
     const node = template.content.cloneNode(true);
@@ -408,6 +422,7 @@ function render() {
     const canvas = node.querySelector("[data-qr-canvas]");
     const copyBtn = node.querySelector("[data-copy]");
     const saveBtn = node.querySelector("[data-save]");
+    const openBtn = node.querySelector("[data-open-destination]");
     const pngBtn = node.querySelector("[data-download-png]");
     const threeMfBtn = node.querySelector("[data-download-3mf]");
 
@@ -418,6 +433,7 @@ function render() {
     pathEl.textContent = link;
     destInput.value = destination;
     destText.textContent = destination ? `Current: ${destination}` : "No destination set";
+    updateOpenButton(openBtn, destination);
 
     const matrix = buildQrMatrix(link);
     renderQrCanvas(canvas, matrix);
@@ -426,15 +442,28 @@ function render() {
       copyText(link);
     });
 
+    if (openBtn) {
+      openBtn.addEventListener("click", () => {
+        const current = destInput.value.trim();
+        if (current) {
+          window.open(current, "_blank", "noopener");
+        }
+      });
+    }
+
     saveBtn.addEventListener("click", () => {
-      updateDestination(id, destInput.value, destText);
+      updateDestination(id, destInput.value, destText, openBtn);
     });
 
     destInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        updateDestination(id, destInput.value, destText);
+        updateDestination(id, destInput.value, destText, openBtn);
       }
+    });
+
+    destInput.addEventListener("input", () => {
+      updateOpenButton(openBtn, destInput.value);
     });
 
     pngBtn.addEventListener("click", () => {
@@ -460,7 +489,7 @@ function sortIds(a, b) {
   return numA - numB;
 }
 
-function updateDestination(id, value, labelEl) {
+function updateDestination(id, value, labelEl, openBtn) {
   if (!isEditUnlocked) {
     handleEditLocked(
       `Editing locked. Use ${REQUIRED_GITHUB_USER} with a valid token and test the connection to enable edits.`
@@ -476,7 +505,16 @@ function updateDestination(id, value, labelEl) {
   const trimmed = value.trim();
   state.items[id] = trimmed;
   labelEl.textContent = trimmed ? `Current: ${trimmed}` : "No destination set";
+  updateOpenButton(openBtn, trimmed);
   queueGithubSync(id);
+}
+
+function updateOpenButton(button, value) {
+  if (!button) {
+    return;
+  }
+  const trimmed = (value || "").trim();
+  button.disabled = !trimmed;
 }
 
 function getQrLink(id) {
@@ -890,81 +928,11 @@ function buildEditHtml(id, fallbackUrl) {
 <body>
   <div class="backdrop"></div>
   <main class="app">
-    <header class="hero">
-      <div class="hero-text">
-        <p class="eyebrow">QR Code Manager</p>
-        <h1>Build, reroute, and print QR codes.</h1>
-        <p class="subtitle">Create stable QR links like /${id}/ that can redirect anywhere, then update destinations without reprinting.</p>
-        <div class="hero-actions">
-          <button id="createQrBtn" class="primary" data-edit-control>Create new QR</button>
-        </div>
-      </div>
-      <div class="hero-card">
-        <div class="stat">
-          <span class="label">Total QRs</span>
-          <span class="value" id="qrCount">0</span>
-        </div>
-        <p class="tip">Redirect pages and the manifest are committed to GitHub when you save.</p>
-      </div>
-    </header>
-
-    <section class="settings">
-      <div class="section-header">
-        <h2>3D print settings</h2>
-        <p>These settings affect 3MF downloads.</p>
-      </div>
-      <div class="slider-grid">
-        <label class="slider">
-          <span>Base thickness (mm)</span>
-          <input type="range" id="baseThickness" min="0.6" max="4" step="0.2">
-          <span class="value" id="baseThicknessValue"></span>
-        </label>
-        <label class="slider">
-          <span>Module height (mm)</span>
-          <input type="range" id="moduleHeight" min="0.6" max="3" step="0.2">
-          <span class="value" id="moduleHeightValue"></span>
-        </label>
-        <label class="slider">
-          <span>Module size (mm)</span>
-          <input type="range" id="moduleSize" min="1" max="3" step="0.1">
-          <span class="value" id="moduleSizeValue"></span>
-        </label>
-      </div>
-      <p class="hint">Quiet zone border is included automatically.</p>
-    </section>
-
-    <section class="settings github">
-      <div class="section-header">
-        <h2>GitHub sync</h2>
-        <p>Auto-commit redirect pages using the GitHub Contents API.</p>
-      </div>
-      <div class="form-grid">
-        <label class="field">
-          <span>GitHub username</span>
-          <input type="text" id="githubUser" placeholder="octocat" autocomplete="username">
-        </label>
-        <label class="field">
-          <span>Repository name</span>
-          <input type="text" id="githubRepo" placeholder="QRCode" autocomplete="off">
-        </label>
-        <label class="field">
-          <span>Personal Access Token</span>
-          <input type="password" id="githubToken" placeholder="ghp_..." autocomplete="off">
-        </label>
-      </div>
-      <div class="form-actions">
-        <button class="primary" id="saveGithubBtn">Save GitHub settings</button>
-        <button class="ghost" id="testGithubBtn">Test connection</button>
-      </div>
-      <p class="status" id="githubStatus">Add your GitHub settings and test the connection to enable editing.</p>
-      <p class="hint">Token is stored in localStorage. Use a fine-grained token with Contents: Read and write.</p>
-    </section>
-
     <section class="list" id="qrList"></section>
 
     <section class="empty" id="emptyState">
-      <h3>No QR codes yet</h3>
-      <p>Create your first QR to generate a preview, PNG, 3MF, and redirect page.</p>
+      <h3>No QR code found</h3>
+      <p>Open the main editor to create new QR codes.</p>
     </section>
   </main>
 
@@ -986,6 +954,7 @@ function buildEditHtml(id, fallbackUrl) {
         </div>
         <p class="qr-destination" data-qr-destination></p>
         <div class="qr-actions">
+          <button class="ghost small" data-open-destination>Open link</button>
           <button class="ghost small" data-download-png>Download PNG</button>
           <button class="ghost small" data-download-3mf>Download 3MF</button>
         </div>

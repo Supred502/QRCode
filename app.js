@@ -23,6 +23,9 @@ const defaultGithub = {
   token: ""
 };
 
+const editorConfig = getEditorConfig();
+const editorId = editorConfig.id;
+
 const listEl = document.getElementById("qrList");
 const emptyEl = document.getElementById("emptyState");
 const countEl = document.getElementById("qrCount");
@@ -44,9 +47,17 @@ async function initialize() {
   setupSettingsUI();
   setupGithubUI();
   await loadManifest();
+  if (editorId && !isAuthorizedUser()) {
+    redirectUnauthorizedEditor(editorId);
+    return;
+  }
   render();
   refreshEditAccess();
   maybeAutoVerifyGithub();
+  if (editorId && createBtn) {
+    createBtn.disabled = true;
+    createBtn.title = "Create is disabled in edit view.";
+  }
 }
 
 function handleCreateClick() {
@@ -117,6 +128,39 @@ function buildManifestJson() {
   };
 
   return JSON.stringify(manifest, null, 2);
+}
+
+function getEditorConfig() {
+  if (typeof window === "undefined") {
+    return { id: "", appRoot: "", fallbackUrl: "" };
+  }
+
+  return {
+    id: String(window.QR_EDITOR_ID || "").trim(),
+    appRoot: String(window.QR_APP_ROOT || "").trim(),
+    fallbackUrl: String(window.QR_FALLBACK_URL || "").trim()
+  };
+}
+
+function getDestinationForId(id) {
+  if (state.items[id]) {
+    return state.items[id];
+  }
+
+  if (editorId && id === editorId && editorConfig.fallbackUrl) {
+    return editorConfig.fallbackUrl;
+  }
+
+  return "";
+}
+
+function redirectUnauthorizedEditor(id) {
+  const destination = getDestinationForId(id);
+  const fallback = getQrLink(id);
+  const target = destination || fallback;
+  if (target) {
+    window.location.replace(target);
+  }
 }
 
 function deriveRepoFromLocation() {
@@ -346,11 +390,15 @@ function createNextId(next) {
 function render() {
   listEl.innerHTML = "";
   const ids = Object.keys(state.items).sort(sortIds);
+  if (editorId && !ids.includes(editorId)) {
+    ids.unshift(editorId);
+  }
+  const visibleIds = editorId ? [editorId] : ids;
 
-  emptyEl.hidden = ids.length > 0;
-  countEl.textContent = String(ids.length);
+  emptyEl.hidden = visibleIds.length > 0;
+  countEl.textContent = String(visibleIds.length);
 
-  ids.forEach((id) => {
+  visibleIds.forEach((id) => {
     const node = template.content.cloneNode(true);
     const card = node.querySelector(".qr-card");
     const titleEl = node.querySelector("[data-qr-title]");
@@ -364,7 +412,7 @@ function render() {
     const threeMfBtn = node.querySelector("[data-download-3mf]");
 
     const link = getQrLink(id);
-    const destination = state.items[id] || "";
+    const destination = getDestinationForId(id);
 
     titleEl.textContent = id.toUpperCase();
     pathEl.textContent = link;
@@ -432,7 +480,18 @@ function updateDestination(id, value, labelEl) {
 }
 
 function getQrLink(id) {
-  return new URL(`${id}/`, window.location.href).toString();
+  return new URL(`${id}/`, getAppRootUrl()).toString();
+}
+
+function getAppRootUrl() {
+  if (editorConfig.appRoot) {
+    return ensureTrailingSlash(editorConfig.appRoot);
+  }
+  return new URL("./", window.location.href).toString();
+}
+
+function ensureTrailingSlash(value) {
+  return value.endsWith("/") ? value : `${value}/`;
 }
 
 function buildQrMatrix(text) {
@@ -819,7 +878,6 @@ function buildRedirectHtml(id, fallbackUrl) {
 
 function buildEditHtml(id, fallbackUrl) {
   const cleanFallback = (fallbackUrl || "").trim();
-  const label = id.toUpperCase();
 
   return `<!doctype html>
 <html lang="en">
@@ -827,178 +885,121 @@ function buildEditHtml(id, fallbackUrl) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${id} editor</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: "Candara", "Trebuchet MS", sans-serif;
-      background: #f7f4ef;
-      color: #1a1a1a;
-      display: grid;
-      place-items: center;
-      min-height: 100vh;
-    }
-
-    .card {
-      background: #fff;
-      border: 1px solid #e3ddd2;
-      padding: 26px 30px;
-      border-radius: 18px;
-      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.08);
-      max-width: 560px;
-      width: min(92vw, 560px);
-      display: grid;
-      gap: 14px;
-    }
-
-    .label {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: #6c655c;
-    }
-
-    .title {
-      font-size: 20px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-    }
-
-    .desc {
-      margin: 0;
-      color: #6c655c;
-      font-size: 14px;
-    }
-
-    .section {
-      display: grid;
-      gap: 6px;
-    }
-
-    .section-label {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #6c655c;
-    }
-
-    .link {
-      word-break: break-all;
-      color: #0f6b53;
-      text-decoration: none;
-      font-size: 15px;
-    }
-
-    .link.disabled {
-      color: #a59e93;
-      pointer-events: none;
-    }
-
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-
-    .button {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 10px 18px;
-      font-size: 0.95rem;
-      font-family: "Candara", "Trebuchet MS", sans-serif;
-      text-decoration: none;
-      border: 1px solid #e3ddd2;
-      background: #f4efe6;
-      color: #1a1a1a;
-    }
-
-    .button.primary {
-      background: #0f6b53;
-      border-color: #0f6b53;
-      color: #fff;
-      box-shadow: 0 8px 20px rgba(15, 107, 83, 0.25);
-    }
-
-    .button.disabled {
-      opacity: 0.6;
-      pointer-events: none;
-    }
-
-    .note {
-      margin: 0;
-      font-size: 12px;
-      color: #6c655c;
-    }
-  </style>
+  <link rel="stylesheet" href="../style.css">
 </head>
 <body>
-  <div class="card">
-    <div class="label">Editor access</div>
-    <div class="title">${label}</div>
-    <p class="desc">Update this QR in the editor or continue to the destination.</p>
-    <div class="section">
-      <div class="section-label">Current destination</div>
-      <a class="link" id="destination-link" href="#">Checking destination...</a>
-    </div>
-    <div class="actions">
-      <a class="button primary" id="open-editor" href="#">Open editor</a>
-      <a class="button" id="open-destination" href="#">Open destination</a>
-    </div>
-    <p class="note">If you are not authorized, you will be redirected.</p>
-  </div>
+  <div class="backdrop"></div>
+  <main class="app">
+    <header class="hero">
+      <div class="hero-text">
+        <p class="eyebrow">QR Code Manager</p>
+        <h1>Build, reroute, and print QR codes.</h1>
+        <p class="subtitle">Create stable QR links like /${id}/ that can redirect anywhere, then update destinations without reprinting.</p>
+        <div class="hero-actions">
+          <button id="createQrBtn" class="primary" data-edit-control>Create new QR</button>
+        </div>
+      </div>
+      <div class="hero-card">
+        <div class="stat">
+          <span class="label">Total QRs</span>
+          <span class="value" id="qrCount">0</span>
+        </div>
+        <p class="tip">Redirect pages and the manifest are committed to GitHub when you save.</p>
+      </div>
+    </header>
+
+    <section class="settings">
+      <div class="section-header">
+        <h2>3D print settings</h2>
+        <p>These settings affect 3MF downloads.</p>
+      </div>
+      <div class="slider-grid">
+        <label class="slider">
+          <span>Base thickness (mm)</span>
+          <input type="range" id="baseThickness" min="0.6" max="4" step="0.2">
+          <span class="value" id="baseThicknessValue"></span>
+        </label>
+        <label class="slider">
+          <span>Module height (mm)</span>
+          <input type="range" id="moduleHeight" min="0.6" max="3" step="0.2">
+          <span class="value" id="moduleHeightValue"></span>
+        </label>
+        <label class="slider">
+          <span>Module size (mm)</span>
+          <input type="range" id="moduleSize" min="1" max="3" step="0.1">
+          <span class="value" id="moduleSizeValue"></span>
+        </label>
+      </div>
+      <p class="hint">Quiet zone border is included automatically.</p>
+    </section>
+
+    <section class="settings github">
+      <div class="section-header">
+        <h2>GitHub sync</h2>
+        <p>Auto-commit redirect pages using the GitHub Contents API.</p>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>GitHub username</span>
+          <input type="text" id="githubUser" placeholder="octocat" autocomplete="username">
+        </label>
+        <label class="field">
+          <span>Repository name</span>
+          <input type="text" id="githubRepo" placeholder="QRCode" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Personal Access Token</span>
+          <input type="password" id="githubToken" placeholder="ghp_..." autocomplete="off">
+        </label>
+      </div>
+      <div class="form-actions">
+        <button class="primary" id="saveGithubBtn">Save GitHub settings</button>
+        <button class="ghost" id="testGithubBtn">Test connection</button>
+      </div>
+      <p class="status" id="githubStatus">Add your GitHub settings and test the connection to enable editing.</p>
+      <p class="hint">Token is stored in localStorage. Use a fine-grained token with Contents: Read and write.</p>
+    </section>
+
+    <section class="list" id="qrList"></section>
+
+    <section class="empty" id="emptyState">
+      <h3>No QR codes yet</h3>
+      <p>Create your first QR to generate a preview, PNG, 3MF, and redirect page.</p>
+    </section>
+  </main>
+
+  <template id="qrCardTemplate">
+    <article class="qr-card">
+      <div class="qr-preview">
+        <canvas data-qr-canvas></canvas>
+        <p class="qr-path" data-qr-path></p>
+      </div>
+      <div class="qr-body">
+        <div class="qr-head">
+          <h3 data-qr-title></h3>
+          <button class="ghost small" data-copy>Copy link</button>
+        </div>
+        <p class="qr-destination-label">Destination URL</p>
+        <div class="destination">
+          <input type="url" placeholder="https://example.com" data-destination data-edit-control>
+          <button class="primary small" data-save data-edit-control>Save</button>
+        </div>
+        <p class="qr-destination" data-qr-destination></p>
+        <div class="qr-actions">
+          <button class="ghost small" data-download-png>Download PNG</button>
+          <button class="ghost small" data-download-3mf>Download 3MF</button>
+        </div>
+      </div>
+    </article>
+  </template>
+
   <script>
-    (function() {
-      var REQUIRED_USER = ${JSON.stringify(REQUIRED_GITHUB_USER)};
-      var STORAGE_KEY = ${JSON.stringify(GITHUB_KEY)};
-      var FALLBACK_URL = ${JSON.stringify(cleanFallback)};
-      var editorUrl = new URL("../", window.location.href).toString();
-      var url = FALLBACK_URL;
-
-      function readSettings() {
-        try {
-          return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-        } catch (err) {
-          return {};
-        }
-      }
-
-      function isAuthorized(settings) {
-        if (!settings || !settings.username || !settings.token) {
-          return false;
-        }
-        return String(settings.username).toLowerCase() === REQUIRED_USER.toLowerCase();
-      }
-
-      if (!isAuthorized(readSettings())) {
-        if (url) {
-          window.location.replace(url);
-        }
-        return;
-      }
-
-      var link = document.getElementById("destination-link");
-      var openDest = document.getElementById("open-destination");
-      var openEditor = document.getElementById("open-editor");
-
-      if (link) {
-        link.textContent = url ? url : "No destination set";
-        link.href = url || "#";
-        if (!url) {
-          link.classList.add("disabled");
-        }
-      }
-
-      if (openDest) {
-        openDest.href = url || "#";
-        if (!url) {
-          openDest.classList.add("disabled");
-        }
-      }
-
-      if (openEditor) {
-        openEditor.href = editorUrl;
-      }
-    })();
+    window.QR_EDITOR_ID = ${JSON.stringify(id)};
+    window.QR_APP_ROOT = new URL("../../", window.location.href).toString();
+    window.QR_FALLBACK_URL = ${JSON.stringify(cleanFallback)};
   </script>
+  <script src="../vendor/qrcode-generator.min.js"></script>
+  <script src="../app.js"></script>
 </body>
 </html>`;
 }

@@ -45,12 +45,35 @@
   </div>
   <script>
     (function() {
+      var REQUIRED_USER = "Supred502";
+      var STORAGE_KEY = "qr-manager:github";
       var FALLBACK_URL = "https://www.youtube.com/watch?v=MCsUKxU_tZU&list=RDEMKg8vrtcRVbviuG25UWuqPA&index=27";
+      var EDIT_PATH = "edit.html";
       var url = FALLBACK_URL;
+
+      function readSettings() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        } catch (err) {
+          return {};
+        }
+      }
+
+      function isAuthorized(settings) {
+        if (!settings || !settings.username || !settings.token) {
+          return false;
+        }
+        return String(settings.username).toLowerCase() === REQUIRED_USER.toLowerCase();
+      }
 
       var target = document.getElementById("redirect-target");
       if (target) {
         target.textContent = url ? url : "No destination set";
+      }
+
+      if (isAuthorized(readSettings())) {
+        window.location.replace(EDIT_PATH);
+        return;
       }
 
       if (url) {

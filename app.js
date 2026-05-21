@@ -529,18 +529,22 @@ function queueGithubSync(id) {
   }
 
   const redirectPath = `${id}/index.html`;
+  const editPath = `${id}/edit.html`;
   const html = buildRedirectHtml(id, state.items[id] || "");
+  const editHtml = buildEditHtml(id, state.items[id] || "");
   const manifestText = buildManifestJson();
 
   githubCommitQueue = githubCommitQueue
     .then(async () => {
       setGithubStatus(`Committing ${redirectPath}...`, "warn");
       await commitGithubFile(redirectPath, html);
+      setGithubStatus(`Committing ${editPath}...`, "warn");
+      await commitGithubFile(editPath, editHtml);
       setGithubStatus(`Committing ${MANIFEST_PATH}...`, "warn");
       await commitGithubFile(MANIFEST_PATH, manifestText);
       hasGithubAccess = true;
       refreshEditAccess();
-      setGithubStatus(`Committed ${redirectPath} and ${MANIFEST_PATH}.`, "ok");
+      setGithubStatus(`Committed ${redirectPath}, ${editPath}, and ${MANIFEST_PATH}.`, "ok");
     })
     .catch((err) => {
       setGithubStatus(err.message || "GitHub commit failed.", "error");
@@ -724,7 +728,7 @@ function buildGithubHeaders(includeAuth) {
 }
 
 function buildRedirectHtml(id, fallbackUrl) {
-  const cleanFallback = fallbackUrl.trim();
+  const cleanFallback = (fallbackUrl || "").trim();
 
   return `<!doctype html>
 <html lang="en">
@@ -773,16 +777,225 @@ function buildRedirectHtml(id, fallbackUrl) {
   </div>
   <script>
     (function() {
+      var REQUIRED_USER = ${JSON.stringify(REQUIRED_GITHUB_USER)};
+      var STORAGE_KEY = ${JSON.stringify(GITHUB_KEY)};
       var FALLBACK_URL = ${JSON.stringify(cleanFallback)};
+      var EDIT_PATH = "edit.html";
       var url = FALLBACK_URL;
+
+      function readSettings() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        } catch (err) {
+          return {};
+        }
+      }
+
+      function isAuthorized(settings) {
+        if (!settings || !settings.username || !settings.token) {
+          return false;
+        }
+        return String(settings.username).toLowerCase() === REQUIRED_USER.toLowerCase();
+      }
 
       var target = document.getElementById("redirect-target");
       if (target) {
         target.textContent = url ? url : "No destination set";
       }
 
+      if (isAuthorized(readSettings())) {
+        window.location.replace(EDIT_PATH);
+        return;
+      }
+
       if (url) {
         window.location.replace(url);
+      }
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+function buildEditHtml(id, fallbackUrl) {
+  const cleanFallback = (fallbackUrl || "").trim();
+  const label = id.toUpperCase();
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${id} editor</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Candara", "Trebuchet MS", sans-serif;
+      background: #f7f4ef;
+      color: #1a1a1a;
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #e3ddd2;
+      padding: 26px 30px;
+      border-radius: 18px;
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.08);
+      max-width: 560px;
+      width: min(92vw, 560px);
+      display: grid;
+      gap: 14px;
+    }
+
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: #6c655c;
+    }
+
+    .title {
+      font-size: 20px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .desc {
+      margin: 0;
+      color: #6c655c;
+      font-size: 14px;
+    }
+
+    .section {
+      display: grid;
+      gap: 6px;
+    }
+
+    .section-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #6c655c;
+    }
+
+    .link {
+      word-break: break-all;
+      color: #0f6b53;
+      text-decoration: none;
+      font-size: 15px;
+    }
+
+    .link.disabled {
+      color: #a59e93;
+      pointer-events: none;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .button {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+      font-family: "Candara", "Trebuchet MS", sans-serif;
+      text-decoration: none;
+      border: 1px solid #e3ddd2;
+      background: #f4efe6;
+      color: #1a1a1a;
+    }
+
+    .button.primary {
+      background: #0f6b53;
+      border-color: #0f6b53;
+      color: #fff;
+      box-shadow: 0 8px 20px rgba(15, 107, 83, 0.25);
+    }
+
+    .button.disabled {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .note {
+      margin: 0;
+      font-size: 12px;
+      color: #6c655c;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="label">Editor access</div>
+    <div class="title">${label}</div>
+    <p class="desc">Update this QR in the editor or continue to the destination.</p>
+    <div class="section">
+      <div class="section-label">Current destination</div>
+      <a class="link" id="destination-link" href="#">Checking destination...</a>
+    </div>
+    <div class="actions">
+      <a class="button primary" id="open-editor" href="#">Open editor</a>
+      <a class="button" id="open-destination" href="#">Open destination</a>
+    </div>
+    <p class="note">If you are not authorized, you will be redirected.</p>
+  </div>
+  <script>
+    (function() {
+      var REQUIRED_USER = ${JSON.stringify(REQUIRED_GITHUB_USER)};
+      var STORAGE_KEY = ${JSON.stringify(GITHUB_KEY)};
+      var FALLBACK_URL = ${JSON.stringify(cleanFallback)};
+      var editorUrl = new URL("../", window.location.href).toString();
+      var url = FALLBACK_URL;
+
+      function readSettings() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+        } catch (err) {
+          return {};
+        }
+      }
+
+      function isAuthorized(settings) {
+        if (!settings || !settings.username || !settings.token) {
+          return false;
+        }
+        return String(settings.username).toLowerCase() === REQUIRED_USER.toLowerCase();
+      }
+
+      if (!isAuthorized(readSettings())) {
+        if (url) {
+          window.location.replace(url);
+        }
+        return;
+      }
+
+      var link = document.getElementById("destination-link");
+      var openDest = document.getElementById("open-destination");
+      var openEditor = document.getElementById("open-editor");
+
+      if (link) {
+        link.textContent = url ? url : "No destination set";
+        link.href = url || "#";
+        if (!url) {
+          link.classList.add("disabled");
+        }
+      }
+
+      if (openDest) {
+        openDest.href = url || "#";
+        if (!url) {
+          openDest.classList.add("disabled");
+        }
+      }
+
+      if (openEditor) {
+        openEditor.href = editorUrl;
       }
     })();
   </script>
